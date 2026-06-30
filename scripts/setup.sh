@@ -53,8 +53,9 @@ echo ""
 
 # ── [3/6] Argo CD ──────────────────────────────────────────────────────────
 echo -e "${YELLOW}[3/6] Argo CD...${NC}"
-kubectl apply -n argocd \
-    -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true
+kubectl apply --server-side \
+    -n argocd \
+    -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl wait --for=condition=available --timeout=300s \
     deployment/argocd-server -n argocd
 echo -e "${GREEN}✓ Argo CD ready${NC}"
@@ -147,3 +148,4 @@ else
 fi
 echo ""
 echo -e "${GREEN}Done!${NC}"
+
