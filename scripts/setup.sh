@@ -22,7 +22,7 @@ GITHUB_USER="iassafe"
 GITHUB_REPO="iassafe-inception-of-things"
 GITHUB_EMAIL="ikrameassafe17@gmail.com"
 
-# ── Prerequisites ──────────────────────────────────────────────────────────
+# Prerequisites
 for tool in docker kubectl k3d git; do
     if ! command -v $tool &> /dev/null; then
         print_error "$tool missing. Run install-tools.sh first."
@@ -30,67 +30,47 @@ for tool in docker kubectl k3d git; do
     fi
 done
 echo -e "${GREEN}✓ All tools present${NC}"
-echo ""
 
-# ── [1/6] K3d cluster ──────────────────────────────────────────────────────
+# [1/6] K3d cluster
 echo -e "${YELLOW}[1/6] K3d cluster...${NC}"
 if k3d cluster list | grep -q "iot-cluster"; then
     k3d cluster delete iot-cluster
 fi
 k3d cluster create iot-cluster \
     --port "8888:30080@server:0" \
+    --port "8080:80@loadbalancer" \
     --wait
 sleep 10
 echo -e "${GREEN}✓ Cluster ready${NC}"
-echo ""
 
-# ── [2/6] Namespaces ───────────────────────────────────────────────────────
+# [2/6] Namespaces
 echo -e "${YELLOW}[2/6] Namespaces...${NC}"
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace dev    --dry-run=client -o yaml | kubectl apply -f -
 echo -e "${GREEN}✓ Namespaces created${NC}"
-echo ""
 
-# ── [3/6] Argo CD ──────────────────────────────────────────────────────────
+# [3/6] Argo CD
 echo -e "${YELLOW}[3/6] Argo CD...${NC}"
-kubectl apply --server-side \
-    -n argocd \
-    -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd \
+    -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || true
 kubectl wait --for=condition=available --timeout=300s \
     deployment/argocd-server -n argocd
 echo -e "${GREEN}✓ Argo CD ready${NC}"
-echo ""
 
-# ── [4/6] Credentials ──────────────────────────────────────────────────────
+# [4/6] Credentials
 echo -e "${YELLOW}[4/6] Retrieving Argo CD admin password...${NC}"
 ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret \
     -o jsonpath="{.data.password}" | base64 -d)
 echo -e "${GREEN}✓ Credentials retrieved${NC}"
-echo ""
 
-# ── [5/6] Push app files to GitHub ─────────────────────────────────────────
+# [5/6] Push deployment.yaml to GitHub (public repo, no token needed for ArgoCD)
 echo -e "${YELLOW}[5/6] Pushing app files to GitHub...${NC}"
-
-if [ -z "$GITHUB_TOKEN" ]; then
-    print_warning "GITHUB_TOKEN environment variable not set."
-    echo "A GitHub Personal Access Token is required to push automatically."
-    echo "Create one at: https://github.com/settings/tokens (scope: repo)"
-    read -sp "Paste your GitHub token now: " GITHUB_TOKEN
-    echo ""
-fi
 
 REPO_DIR="${HOME}/${GITHUB_REPO}"
 
 if [ ! -d "$REPO_DIR" ]; then
-    print_info "Cloning existing repo (or creating fresh one)..."
-    git clone "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git" \
-        "$REPO_DIR" 2>/dev/null || {
-        print_warning "Clone failed (repo may not exist yet). Initializing fresh local repo..."
-        mkdir -p "$REPO_DIR"
-        cd "$REPO_DIR"
-        git init
-        git remote add origin "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
-    }
+    print_info "Cloning repo..."
+    git clone "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git" "$REPO_DIR"
 fi
 
 cd "$REPO_DIR"
@@ -104,8 +84,8 @@ git checkout -B main 2>/dev/null || true
 git add p3/confs/deployment.yaml
 
 if ! git diff --cached --quiet; then
-    git commit -m "P3: add/update deployment manifest"
-    print_info "Pushing to GitHub..."
+    git commit -m "P3: add deployment manifest"
+    print_info "Pushing to GitHub (you will be prompted for credentials)..."
     git push -u origin main
     print_info "Push successful!"
 else
@@ -114,38 +94,35 @@ fi
 
 cd "${SCRIPT_DIR}"
 echo -e "${GREEN}✓ App files pushed to GitHub${NC}"
-echo ""
 
-# ── [6/6] Apply Argo CD Application ────────────────────────────────────────
+# [6/6] Apply Argo CD Application
 echo -e "${YELLOW}[6/6] Applying Argo CD Application...${NC}"
 kubectl apply -f "${SCRIPT_DIR}/../confs/argocd-app.yaml"
-sleep 15
+
+# Expose Argo CD via port-forward
+pkill -f "kubectl port-forward.*argocd" 2>/dev/null || true
+kubectl port-forward svc/argocd-server -n argocd 8080:443 --address 0.0.0.0 \
+    > /tmp/argocd-pf.log 2>&1 &
+
+sleep 20
 kubectl get applications -n argocd
 echo -e "${GREEN}✓ Argo CD Application applied${NC}"
-echo ""
 
-# ── Summary ─────────────────────────────────────────────────────────────────
+echo ""
 echo "================================================"
 echo -e "${GREEN}Setup Complete!${NC}"
 echo "================================================"
 echo ""
-echo "ArgoCD : http://${DROPLET_IP}:8080  (port-forward needed, see below)"
-echo "         admin / ${ARGOCD_PASSWORD}"
+echo "ArgoCD : http://${DROPLET_IP}:8080  (admin / ${ARGOCD_PASSWORD})"
 echo "App    : curl http://${DROPLET_IP}:8888/"
 echo ""
-print_info "Starting Argo CD port-forward in background..."
-pkill -f "kubectl port-forward.*argocd" 2>/dev/null || true
-kubectl port-forward svc/argocd-server -n argocd 8080:443 --address 0.0.0.0 \
-    > /tmp/argocd-pf.log 2>&1 &
-sleep 3
 
-sleep 5
+sleep 10
 if curl -s "http://localhost:8888/" 2>/dev/null | grep -q "v1"; then
     echo -e "${GREEN}✓ App is responding!${NC}"
     curl -s "http://localhost:8888/"
 else
-    print_warning "App may still be syncing. Check: kubectl get pods -n dev"
+    print_warning "App may still be syncing. Try: kubectl get pods -n dev"
 fi
 echo ""
 echo -e "${GREEN}Done!${NC}"
-
